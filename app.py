@@ -218,7 +218,8 @@ class VideoProcessorApp:
 
             self.root.after(0, self.progress_bar.config, {'maximum': len(video_files)})
             
-            generated_videos = []
+            final_output_path = os.path.join(output_dir, "M2SVid_Convergence_Control.mp4")
+            out_writer = None
             
             for i, filename in enumerate(video_files):
                 self._log_message(f"\nProcessing '{filename}' ({i+1}/{len(video_files)})...")
@@ -230,54 +231,39 @@ class VideoProcessorApp:
                 if not os.path.exists(depth_path):
                     self._log_message(f"  [!] Error: Depth video not found for {filename}. Skipping.")
                     continue
-                self._process_predict(
-                    input_path, depth_path, output_dir, filename, 
+                    
+                result = self._process_predict(
+                    input_path, depth_path, filename, 
                     params['convergence_ratio'], params['ema_alpha'],
                     params['scaler_decay'], params['scaler_buffer'],
                     params['temporal_window']
                 )
                 
-                output_filename = f"{base_name}_convergence_predict.mp4"
-                output_path = os.path.join(output_dir, output_filename)
-                if os.path.exists(output_path):
-                    generated_videos.append(output_path)
+                if result is None:
+                    continue
+                    
+                width, height, fps, total_frames, predicted_brightness_values = result
+                
+                if out_writer is None:
+                    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+                    out_writer = cv2.VideoWriter(final_output_path, fourcc, fps, (width, height), isColor=False)
+                    if not out_writer.isOpened():
+                        self._log_message(f"  [!] Error: Could not create output video writer.")
+                        self.root.after(0, lambda: messagebox.showerror("Fatal Error", "Could not create output video writer."))
+                        return
+                
+                self._set_status(f"Writing frames for: {filename}")
+                for j in range(total_frames):
+                    # Ensure brightness_values list has enough frames, otherwise use last known value
+                    brightness = predicted_brightness_values[j] if j < len(predicted_brightness_values) else predicted_brightness_values[-1]
+                    frame = np.full((height, width, 1), brightness, dtype=np.uint8)
+                    out_writer.write(frame)
                 
                 self._set_progress(i + 1)
 
-            if generated_videos:
-                self._log_message("\n--- Concatenating Videos via FFmpeg ---")
-                self._set_status("Concatenating videos...")
-                
-                import subprocess
-                concat_list_path = os.path.join(output_dir, "concat_list.txt")
-                try:
-                    with open(concat_list_path, 'w', encoding='utf-8') as f:
-                        for video_path in generated_videos:
-                            safe_path = video_path.replace('\\', '/')
-                            f.write(f"file '{safe_path}'\n")
-                    
-                    final_output_path = os.path.join(output_dir, "M2SVid_Convergence_Control.mp4")
-                    
-                    subprocess.run([
-                        'ffmpeg', '-y', '-f', 'concat', '-safe', '0', 
-                        '-i', concat_list_path, 
-                        '-c', 'copy', 
-                        final_output_path
-                    ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                    
-                    self._log_message(f"  > Created M2SVid_Convergence_Control.mp4")
-                    
-                    # Cleanup
-                    os.remove(concat_list_path)
-                    for video_path in generated_videos:
-                        try:
-                            os.remove(video_path)
-                        except OSError as e:
-                            self._log_message(f"  [!] Could not delete {os.path.basename(video_path)}: {e}")
-                            
-                    self._log_message("  > Temporary individual video files cleaned up.")
-                except Exception as e:
-                    self._log_message(f"  [!] FFmpeg concatenation failed: {e}")
+            if out_writer is not None:
+                out_writer.release()
+                self._log_message(f"\n  > Successfully created: {os.path.basename(final_output_path)}")
 
             self._log_message("\n--- Processing Complete ---")
             self._set_status("Finished.")
@@ -297,15 +283,16 @@ class VideoProcessorApp:
         fps = cap.get(cv2.CAP_PROP_FPS)
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         return width, height, fps, total_frames
-    def _process_predict(self, rgb_path, depth_path, output_dir, filename, convergence_ratio, ema_alpha, scaler_decay, scaler_buffer, temporal_window):
-        self._set_status(f"Analyzing (Convergence Model): {filename}")
+
+    def _process_predict(self, rgb_path, depth_path, filename, convergence_ratio, ema_alpha, scaler_decay, scaler_buffer, temporal_window):
+        self._set_status(f"Analyzing: {filename}")
         
         rgb_cap = cv2.VideoCapture(rgb_path)
         depth_cap = cv2.VideoCapture(depth_path)
         
         if not rgb_cap.isOpened() or not depth_cap.isOpened():
             self._log_message(f"  [!] Error: Could not open video files. Skipping.")
-            return
+            return None
             
         width, height, fps, total_frames_rgb = self._get_video_properties(rgb_cap)
         _, _, _, total_frames_depth = self._get_video_properties(depth_cap)
@@ -315,7 +302,7 @@ class VideoProcessorApp:
             self._log_message(f"  [!] Error: Invalid video properties. Skipping.")
             rgb_cap.release()
             depth_cap.release()
-            return
+            return None
             
         if getattr(self, 'estimator', None) is None:
             self._log_message(f"  > Loading Convergence Estimator...")
@@ -325,15 +312,16 @@ class VideoProcessorApp:
                 self._log_message(f"  [!] Failed to load model: {e}")
                 rgb_cap.release()
                 depth_cap.release()
-                return
+                return None
                 
         estimator = self.estimator
+        device = estimator.device
             
         if estimator is None or getattr(estimator, 'model', None) is None:
             self._log_message("  [!] Error: Convergence model failed to initialize properly.")
             rgb_cap.release()
             depth_cap.release()
-            return
+            return None
 
         predicted_brightness_values = []
         prev_val = None
@@ -348,13 +336,18 @@ class VideoProcessorApp:
             if not ret_rgb or not ret_depth:
                 break
                 
-            # Convert RGB to float tensor [1, 3, H, W]
-            frame_rgb_rgb = cv2.cvtColor(frame_rgb, cv2.COLOR_BGR2RGB)
-            rgb_tensor = torch.from_numpy(frame_rgb_rgb).permute(2, 0, 1).unsqueeze(0).float() / 255.0
+            # Upload directly to GPU: Convert RGB to float tensor [1, 3, H, W] 
+            bgr_tensor = torch.from_numpy(frame_rgb).to(device)
+            rgb_tensor = bgr_tensor[:, :, [2, 1, 0]].permute(2, 0, 1).unsqueeze(0).float() / 255.0
             
-            # Convert Depth to float tensor [1, 1, H, W]
-            gray_depth = cv2.cvtColor(frame_depth, cv2.COLOR_BGR2GRAY) if len(frame_depth.shape) == 3 else frame_depth
-            depth_tensor = torch.from_numpy(gray_depth).unsqueeze(0).unsqueeze(0).float() / 255.0
+            # Upload directly to GPU: Convert Depth to float tensor [1, 1, H, W]
+            depth_bgr = torch.from_numpy(frame_depth).to(device)
+            if depth_bgr.dim() == 3 and depth_bgr.shape[2] == 3:
+                # BGR to Grayscale using OpenCV coefficients
+                depth_tensor = (depth_bgr[:, :, 0] * 0.114 + depth_bgr[:, :, 1] * 0.587 + depth_bgr[:, :, 2] * 0.299)
+                depth_tensor = depth_tensor.unsqueeze(0).unsqueeze(0).float() / 255.0
+            else:
+                depth_tensor = depth_bgr.unsqueeze(0).unsqueeze(0).float() / 255.0
             
             rgb_queue.append(rgb_tensor)
             scaled_depth = scaler.update(depth_tensor, return_minmax=False)
@@ -379,8 +372,8 @@ class VideoProcessorApp:
                     predicted_brightness_values.append(int(fallback * 255))
                     prev_val = fallback
                 
-            if i % 30 == 0:
-                self._set_status(f"Analyzing (Convergence Model): {filename} ({i}/{total_frames})")
+            if i > 0 and i % 30 == 0:
+                self._set_status(f"Analyzing: {filename} ({i}/{total_frames})")
                 
         # Flush remaining frames from buffer
         flushed_depths = scaler.flush(return_minmax=False)
@@ -408,10 +401,8 @@ class VideoProcessorApp:
         
         if not predicted_brightness_values:
             self._log_message("  [!] Error: No frames processed successfully.")
-            return
+            return None
             
-        self._log_message(f"  > Computed {len(predicted_brightness_values)} robust frames.")
-        
         if temporal_window > 1:
             # Clamp window to clip length so short clips still get smoothed
             effective_window = min(temporal_window, len(predicted_brightness_values))
@@ -426,28 +417,7 @@ class VideoProcessorApp:
                 smoothed_arr = np.convolve(padded_arr, box_filter, mode='valid')
                 predicted_brightness_values = np.clip(smoothed_arr, 0, 255).astype(int).tolist()
         
-        base_name, _ = os.path.splitext(filename)
-        output_filename = f"{base_name}_convergence_predict.mp4"
-        self._write_video(output_dir, output_filename, width, height, fps, total_frames, predicted_brightness_values)
-        
-    def _write_video(self, output_dir, filename, width, height, fps, total_frames, brightness_values):
-        self._set_status(f"Writing: {filename}")
-        output_path = os.path.join(output_dir, filename)
-        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-        out = cv2.VideoWriter(output_path, fourcc, fps, (width, height), isColor=False)
-
-        if not out.isOpened():
-            self._log_message(f"  [!] Error: Could not create output video writer.")
-            return
-            
-        for i in range(total_frames):
-            # Ensure brightness_values list has enough frames, otherwise use last known value
-            brightness = brightness_values[i] if i < len(brightness_values) else brightness_values[-1]
-            frame = np.full((height, width, 1), brightness, dtype=np.uint8)
-            out.write(frame)
-        
-        out.release()
-        self._log_message(f"  > Successfully created '{filename}'")
+        return width, height, fps, total_frames, predicted_brightness_values
 
 
 if __name__ == "__main__":
