@@ -36,13 +36,13 @@ The final output is streamed directly into a single, continuous grayscale `.mp4`
 ## Requirements
 
 - **Python** 3.10+
-- **CUDA-capable GPU** (recommended) with CUDA 12.8 drivers
+- **CUDA-capable GPU** (recommended) with CUDA 13.1 drivers
 
 ### Python Dependencies
 
 | Package | Purpose |
 |---|---|
-| `torch`, `torchvision`, `torchaudio` | Neural network inference (CUDA 12.8 wheels) |
+| `torch`, `torchvision`, `torchaudio` | Neural network inference (CUDA 13.1 wheels) |
 | `opencv-python` | Video I/O and frame manipulation |
 | `numpy` | Numerical operations and temporal smoothing |
 
