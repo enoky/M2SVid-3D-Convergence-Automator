@@ -245,15 +245,24 @@ class VideoProcessorApp:
                     
                 width, height, fps, total_frames, predicted_brightness_values = result
                 
+                if 23.97 < fps < 23.98:
+                    fps_str = "24000/1001"
+                elif 29.97 < fps < 29.98:
+                    fps_str = "30000/1001"
+                elif 59.94 < fps < 59.95:
+                    fps_str = "60000/1001"
+                else:
+                    fps_str = str(fps)
+                
                 if ffmpeg_proc is None:
                     ffmpeg_cmd = [
                         'ffmpeg', '-y', '-hide_banner', '-loglevel', 'error',
                         '-f', 'rawvideo', '-pix_fmt', 'gray',
                         '-s', f'{width}x{height}',
-                        '-r', str(fps),
+                        '-r', fps_str,
                         '-i', 'pipe:0',
                         '-c:v', 'libx264', '-pix_fmt', 'yuv420p',
-                        '-crf', '18', '-preset', 'ultrafast',
+                        '-crf', '0', '-preset', 'ultrafast',
                         '-vsync', 'cfr',
                         final_output_path
                     ]
