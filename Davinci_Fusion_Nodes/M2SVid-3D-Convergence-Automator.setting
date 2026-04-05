@@ -114,7 +114,7 @@
 					SourceOp = "Convergence_Input",
 					Source = "Output",
 				},
-				Channel = Input { Value = 4, },
+				Channel = Input { Value = 0, },
 				Width = Input { Value = 0.5, },
 				Height = Input { Value = 0.5, }
 			},

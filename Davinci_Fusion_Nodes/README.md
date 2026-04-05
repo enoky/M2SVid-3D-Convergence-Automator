@@ -17,14 +17,14 @@ A pre-built Fusion node graph (`.setting` file) that applies automated convergen
 ```
 Full_SBS_Input (MediaIn)           Convergence_Input (MediaIn)
        │                                     │
-   Splitter                               Probe (reads luminance → 0.00–0.04)
+   Splitter                               Probe (reads Red channel → 0.00–1.00)
     ┌──┴──┐                                  │
-  Left   Right                         Control_Panel
-    │      │                          (Convergence slider)
+  Left   Right                          Controller
+    │      │                        (Max Convergence slider)
  GlobalAlign ──────────────────────────────── ↑
-    ┌──┴──┐                  expression: Translation.X = -Convergence
+    ┌──┴──┐                  expression: Translation.X = -(Convergence * Max_Convergence)
     │      │
-Transform1  Transform2       expression: Size = Convergence + 1.01
+Transform1  Transform2       expression: Size = (Convergence * Max_Convergence) + 1
     │      │
   Combiner (SBS → single frame)
        │
@@ -33,7 +33,7 @@ Transform1  Transform2       expression: Size = Convergence + 1.01
    MediaOut
 ```
 
-**How it works:** A `Probe` node samples the center pixel of the convergence control video each frame, mapping its brightness to a value between 0 and 0.04. That value drives the `GlobalAlign` horizontal shift (pushing the left/right views apart) and both `Transform` nodes' scale (zooming in slightly to hide the shifted edges). The net effect is a per-frame convergence adjustment that tracks the most salient depth in the scene.
+**How it works:** A `Probe` node samples the center pixel of the convergence control video each frame, mapping its brightness (from the Red channel, which mirrors Luminance in grayscale) to a value between 0.0 and 1.0. That value is fed into the `Controller` node, multiplied by the `Max Convergence` slider, and used to drive the `GlobalAlign` horizontal shift (pushing the left/right views apart) and both `Transform` nodes' scale (zooming in slightly to hide the shifted edges). The net effect is a per-frame convergence adjustment that tracks the most salient depth in the scene.
 
 ---
 
@@ -114,17 +114,13 @@ Before using this macro you need:
 
 4. **Load the macro** using any of the three installation methods above.
 
-5. **Connect the inputs:**
+5. **Wire the media into the macro:**
+   Since the embedded `.setting` macro spawns with its own placeholder `MediaIn` nodes (`Full_SBS_Input` and `Convergence_Input`), you cannot directly connect new media into them. Instead, replace them:
 
-   | Node | Connect To |
-   |---|---|
-   | **`Full_SBS_Input`** | Your full side-by-side 3D `MediaIn` node (the clip on the timeline, or drag it from the Media Pool) |
-   | **`Convergence_Input`** | Drag `M2SVid_Convergence_Control.mp4` from the Media Pool onto the Fusion canvas to create a new `MediaIn`, then connect it to this input |
+   - **SBS 3D Video:** Delete the default `Full_SBS_Input` node. Connect the output of your timeline clip's `MediaIn` directly into the input of the **`Splitter1`** node.
+   - **Convergence Video:** Drag `M2SVid_Convergence_Control.mp4` from the Media Pool onto the Fusion canvas to create a new `MediaIn`. Delete the default `Convergence_Input` node, and connect your new convergence `MediaIn` directly to the `ImageToProbe` input on the **`Probe1`** node.
 
-   > [!NOTE]
-   > If you loaded the macro into an existing composition that already has a `MediaIn` for the timeline clip, simply connect that existing `MediaIn`'s output to the `Full_SBS_Input` node's input.
-
-6. **Connect the output** — wire the `MediaOut1_1` node to your composition's `MediaOut` (or replace the default `MediaOut`).
+6. **Connect the output:** Wire the `MediaOut1_1` node (or `Anaglyph1` directly) to your composition's main `MediaOut` node.
 
 7. **Play back** the timeline. The convergence will adjust automatically on every frame.
 
@@ -137,11 +133,12 @@ Before using this macro you need:
 
 ### Adjusting Convergence Strength
 
-- Select the **`Control_Panel`** node (highlighted in orange).
-- In the Inspector, you'll find the **Convergence** slider (range: `0.00` – `0.04`).
-- This value is driven automatically by the `Probe` node reading the convergence video, but you can:
-  - **Override** it by disconnecting the Probe and keyframing the slider manually.
-  - **Scale** the effect by modifying the expressions on `Transform1` / `Transform2` (e.g., change `Convergence + 1.01` to `Convergence * 0.5 + 1.01` to halve the zoom).
+- Select the **`Controller`** node (highlighted in orange).
+- In the Inspector, you'll find the **Max Convergence** slider (default: `0.04`).
+- This slider dictates the maximum possible pixel shift when the underlying grayscale video hits its absolute brightest value (255). We recommend keeping it between `0.02` and `0.06`.
+- Below it is the **Probe Value (Auto)** slider, which is continually overridden by the `Probe` node reading your video. 
+  - **Scale the effect:** Simply drag the **Max Convergence** slider up or down. Because all downstream nodes multiply the Auto Probe variable by this Maximum Value safely, you don't need to manually rewrite any scaling expressions!
+  - **Override the effect:** If you want manual control, just disconnect the Probe and manually keyframe the **Probe Value (Auto)** slider yourself.
 
 ---
 
@@ -152,7 +149,7 @@ Before using this macro you need:
 | Nodes don't appear after import | Restart DaVinci Resolve. Ensure the `.setting` file is in the correct Templates directory and not inside a nested subfolder beyond what's expected. |
 | Black output or no convergence effect | Verify both `MediaIn` nodes are connected and that the convergence video has the same frame count / frame rate as the SBS clip. |
 | Edge clipping after convergence shift | The `Transform` nodes zoom in slightly (≈1%–5%) to compensate. If you see black edges, increase the `Size` expression constant (e.g., `Convergence + 1.02`). |
-| `Probe` reads 0 on every frame | Make sure `Convergence_Input` is connected to the correct convergence grayscale video, not an empty or wrong clip. The Probe reads the **alpha channel** (`Channel = 4`) — if your video has no alpha, change the Probe's Channel to **Luminance** in the Inspector. |
+| `Probe` reads 0 on every frame | Make sure `Convergence_Input` is connected to the correct convergence grayscale video. Because the `M2SVid_Convergence_Control.mp4` video has no alpha channel, ensure the Probe's Channel is set to **Red** or **Luminance** in the Inspector (which is the new default in the macro). |
 
 ---
 
