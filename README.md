@@ -102,7 +102,7 @@ The final output, `M2SVid_Convergence_Control.mp4`, can then be imported into Da
 | **Convergence Ratio** | `0.6` | 0.0 – 1.0 | Controls where the convergence plane sits relative to the salient object's depth range. Lower values push the plane closer to the camera; higher values push it deeper. |
 | **EMA Alpha** | `0.2` | 0.01 – 1.0 | Frame-to-frame smoothing factor. Lower values produce smoother (more sluggish) transitions; higher values track predictions more closely. |
 | **Scaler Decay** | `0.9` | 0.0 – 1.0 | How quickly the MinMax normalization adapts to new depth ranges. Higher values create a more stable baseline; lower values react faster. |
-| **Scaler Buffer** | `60` | ≥ 1 | Number of frames used in the MinMax sliding window. Larger buffers create a wider temporal context for normalization. |
+| **Scaler Buffer** | `30` | ≥ 1 | Number of frames used in the MinMax sliding window. Larger buffers create a wider temporal context for normalization. |
 | **Temporal Window** | `31` | ≥ 1 (odd) | Width of the post-process box filter (in frames). Larger windows produce a smoother final curve. Even values are automatically incremented to the next odd number. |
 
 ---
