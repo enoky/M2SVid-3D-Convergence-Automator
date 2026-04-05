@@ -4,6 +4,7 @@ import os
 import cv2
 import numpy as np
 import threading
+import subprocess
 import torch
 from convergence_estimator import ConvergenceEstimator
 from depth_scaler import EMAMinMaxScaler
@@ -88,7 +89,7 @@ class VideoProcessorApp:
         self.scaler_decay_entry.grid(row=1, column=1, sticky="w", padx=5, pady=(10, 0))
 
         ttk.Label(self.convergence_frame, text=" | Scaler Buffer (frames):").grid(row=1, column=2, sticky="w", padx=(10, 0), pady=(10, 0))
-        self.scaler_buffer_var = tk.StringVar(value="60")
+        self.scaler_buffer_var = tk.StringVar(value="30")
         self.scaler_buffer_entry = ttk.Entry(self.convergence_frame, textvariable=self.scaler_buffer_var, width=10)
         self.scaler_buffer_entry.grid(row=1, column=3, sticky="w", padx=5, pady=(10, 0))
 
@@ -219,7 +220,7 @@ class VideoProcessorApp:
             self.root.after(0, self.progress_bar.config, {'maximum': len(video_files)})
             
             final_output_path = os.path.join(output_dir, "M2SVid_Convergence_Control.mp4")
-            out_writer = None
+            ffmpeg_proc = None
             
             for i, filename in enumerate(video_files):
                 self._log_message(f"\nProcessing '{filename}' ({i+1}/{len(video_files)})...")
@@ -244,26 +245,45 @@ class VideoProcessorApp:
                     
                 width, height, fps, total_frames, predicted_brightness_values = result
                 
-                if out_writer is None:
-                    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-                    out_writer = cv2.VideoWriter(final_output_path, fourcc, fps, (width, height), isColor=False)
-                    if not out_writer.isOpened():
-                        self._log_message(f"  [!] Error: Could not create output video writer.")
-                        self.root.after(0, lambda: messagebox.showerror("Fatal Error", "Could not create output video writer."))
+                if ffmpeg_proc is None:
+                    ffmpeg_cmd = [
+                        'ffmpeg', '-y', '-hide_banner', '-loglevel', 'error',
+                        '-f', 'rawvideo', '-pix_fmt', 'gray',
+                        '-s', f'{width}x{height}',
+                        '-r', str(fps),
+                        '-i', 'pipe:0',
+                        '-c:v', 'libx264', '-pix_fmt', 'yuv420p',
+                        '-crf', '18', '-preset', 'ultrafast',
+                        '-vsync', 'cfr',
+                        final_output_path
+                    ]
+                    try:
+                        ffmpeg_proc = subprocess.Popen(
+                            ffmpeg_cmd, stdin=subprocess.PIPE,
+                            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                            creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+                        )
+                    except FileNotFoundError:
+                        self._log_message("  [!] Error: FFmpeg not found. Please install FFmpeg and add it to PATH.")
+                        self.root.after(0, lambda: messagebox.showerror("Fatal Error", "FFmpeg not found on PATH."))
                         return
                 
                 self._set_status(f"Writing frames for: {filename}")
                 for j in range(total_frames):
-                    # Ensure brightness_values list has enough frames, otherwise use last known value
                     brightness = predicted_brightness_values[j] if j < len(predicted_brightness_values) else predicted_brightness_values[-1]
-                    frame = np.full((height, width, 1), brightness, dtype=np.uint8)
-                    out_writer.write(frame)
+                    frame = np.full((height, width), brightness, dtype=np.uint8)
+                    ffmpeg_proc.stdin.write(frame.tobytes())
                 
                 self._set_progress(i + 1)
 
-            if out_writer is not None:
-                out_writer.release()
-                self._log_message(f"\n  > Successfully created: {os.path.basename(final_output_path)}")
+            if ffmpeg_proc is not None:
+                ffmpeg_proc.stdin.close()
+                ffmpeg_proc.wait()
+                if ffmpeg_proc.returncode != 0:
+                    stderr_out = ffmpeg_proc.stderr.read().decode(errors='replace')
+                    self._log_message(f"  [!] FFmpeg error: {stderr_out}")
+                else:
+                    self._log_message(f"\n  > Successfully created: {os.path.basename(final_output_path)}")
 
             self._log_message("\n--- Processing Complete ---")
             self._set_status("Finished.")
