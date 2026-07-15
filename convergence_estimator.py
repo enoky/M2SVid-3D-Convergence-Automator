@@ -18,9 +18,12 @@ class ConvergenceEstimator:
         return cls._instance
 
     def __init__(self, model_path=None, device=None):
-        if hasattr(self, 'model'):
+        # Only short-circuit once a model has actually been loaded, so a failed
+        # first load can be retried instead of caching the failure forever.
+        if getattr(self, 'model', None) is not None:
             return
-            
+
+
         self.device = device or ('cuda' if torch.cuda.is_available() else 'cpu')
         
         # Determine model path if not provided
@@ -40,7 +43,7 @@ class ConvergenceEstimator:
             
             # Load weights
             logger.info(f"Loading convergence model from {model_path}...")
-            checkpoint = torch.load(model_path, map_location=self.device)
+            checkpoint = torch.load(model_path, map_location=self.device, weights_only=True)
             
             # Extract state_dict if it's wrapped
             if isinstance(checkpoint, dict) and "state_dict" in checkpoint:

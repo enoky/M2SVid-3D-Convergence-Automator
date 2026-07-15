@@ -19,16 +19,20 @@ A **U²-Net**-based saliency model (`ConvergenceEstimator`) identifies the most 
 2. **Per-frame EMA Smoothing** — blends each prediction with the previous value for temporal coherence.
 3. **Post-process Temporal Convolution** — applies a centered box filter across the entire clip to remove residual flicker.
 
-The final output is streamed directly into a single, continuous grayscale `.mp4` file (`M2SVid_Convergence_Control.mp4`), where each frame's brightness (0–255) encodes the convergence value for that moment in the film. By maintaining a single video writer stream, the process avoids heavy temporary disk I/O.
+The final output is a single, continuous grayscale `.mp4` file (`M2SVid_Convergence_Control.mp4`), where each frame's brightness (0–255) encodes the convergence value for that moment in the film. Because the Fusion `Probe` node only samples a single pixel, the control video is rendered at a tiny fixed 64×64 resolution — encoding is near-instant and the file stays only a few megabytes regardless of source resolution. Only the frame rate must match your footage (this is validated before processing starts). A matching `M2SVid_Convergence_Control.csv` is exported alongside it with the per-frame values for diagnostics or alternate workflows.
 
 ---
 
 ## Features
 
-- **Fully GPU-accelerated pipeline** — model inference, buffer normalizations, and even frame color-space conversions execute natively on PyTorch CUDA arrays to completely avoid CPU bottlenecks.
-- **Batch processing** — processes an entire folder of video clips in sequence.
-- **Single-stream rendering** — chunks are appended sequentially into one continuous timeline-ready control video, completely bypassing the need for temporary files and external concatenators.
-- **Tunable parameters** — convergence ratio, EMA alpha, scaler decay, buffer size, and temporal window are all exposed in the GUI.
+- **Fully GPU-accelerated pipeline** — model inference, buffer normalizations, and frame color-space conversions execute natively on PyTorch CUDA arrays. Frames are downscaled to the model's input size immediately after decode, keeping VRAM usage flat even for 4K sources, and inference runs in batches for throughput.
+- **Sync-safe batch processing** — clips are processed in natural sort order (`scene2` before `scene10`) and every RGB/depth pair is validated *before* processing starts (missing depth files, unopenable clips, or mismatched frame rates abort the run instead of silently desyncing the control track).
+- **Single-stream rendering** — all clips are appended sequentially into one continuous timeline-ready control video, with no temporary files or external concatenators.
+- **Frame-exact values** — the output is encoded losslessly and flagged as full-range, so a written brightness of 0–255 reads back bit-exact in the Probe node.
+- **Curve preview** — analyze the first N seconds of the first clip and view the resulting convergence curve in a plot window before committing to a full run.
+- **CSV export** — the final per-frame curve is also written to `M2SVid_Convergence_Control.csv`.
+- **Tunable parameters** — convergence ratio, EMA alpha, scaler decay, buffer size, temporal window, and cross-clip smoothing are all exposed in the GUI, and settings persist between sessions (`settings.json`).
+- **Stoppable** — a long run can be cancelled cleanly at any time with the Stop button.
 - **Singleton model loading** — the neural network is loaded once and reused across all clips.
 
 ---
@@ -36,13 +40,14 @@ The final output is streamed directly into a single, continuous grayscale `.mp4`
 ## Requirements
 
 - **Python** 3.10+
-- **CUDA-capable GPU** (recommended) with CUDA 13.1 drivers
+- **CUDA-capable GPU** (recommended) with a driver supporting CUDA 13.x
+- **FFmpeg** available on `PATH`
 
 ### Python Dependencies
 
 | Package | Purpose |
 |---|---|
-| `torch`, `torchvision`, `torchaudio` | Neural network inference (CUDA 13.1 wheels) |
+| `torch`, `torchvision`, `torchaudio` | Neural network inference (CUDA 13.0 / `cu130` wheels) |
 | `opencv-python` | Video I/O and frame manipulation |
 | `numpy` | Numerical operations and temporal smoothing |
 
@@ -60,7 +65,7 @@ python -m venv venv
 venv\Scripts\activate        # Windows
 # source venv/bin/activate   # Linux / macOS
 
-# Install dependencies (pulls PyTorch with CUDA 12.8 support)
+# Install dependencies (pulls PyTorch with CUDA 13.0 support)
 pip install -r requirements.txt
 ```
 
@@ -89,9 +94,13 @@ python app.py
 2. **Input (Depth) Folder** — select the folder containing the matching depth videos. Each depth file must be named `<clip_name>_depth.<ext>` (e.g., `scene01.mp4` → `scene01_depth.mp4`).
 3. **Output Folder** — choose where the convergence control video will be saved.
 4. **Adjust parameters** (optional) — tune the smoothing and convergence settings below.
-5. Click **Start Processing**.
+5. **Preview** (optional) — click **Preview Curve** to analyze the first N seconds of the first clip and inspect the resulting convergence curve before running the full job.
+6. Click **Start Processing**. All clip pairs are validated up front; the run aborts with a clear error list if any depth video is missing or the clips don't share one frame rate. A running job can be cancelled with the **Stop** button.
 
-The final output, `M2SVid_Convergence_Control.mp4`, can then be imported into DaVinci Resolve as a control track.
+The final output, `M2SVid_Convergence_Control.mp4`, can then be imported into DaVinci Resolve as a control track. The per-frame curve is also exported as `M2SVid_Convergence_Control.csv`.
+
+> [!TIP]
+> The control video is encoded and flagged as **full-range** so brightness 0–255 maps exactly to Probe values 0.0–1.0. If the Probe in Resolve never reaches 0.0/1.0, right-click the clip in the Media Pool → **Clip Attributes → Video → Data Levels** and set it to **Full**.
 
 ---
 
@@ -104,6 +113,8 @@ The final output, `M2SVid_Convergence_Control.mp4`, can then be imported into Da
 | **Scaler Decay** | `0.9` | 0.0 – 1.0 | How quickly the MinMax normalization adapts to new depth ranges. Higher values create a more stable baseline; lower values react faster. |
 | **Scaler Buffer** | `30` | ≥ 1 | Number of frames used in the MinMax sliding window. Larger buffers create a wider temporal context for normalization. |
 | **Temporal Window** | `31` | ≥ 1 (odd) | Width of the post-process box filter (in frames). Larger windows produce a smoother final curve. Even values are automatically incremented to the next odd number. |
+| **Smooth across clip boundaries** | off | on/off | When off, EMA and the temporal filter reset at every clip (correct for scene cuts — each clip gets its own smoothing). When on, smoothing carries across clips (correct when the clips are arbitrary segments of continuous footage, avoiding a convergence "pop" at each join). |
+| **Preview seconds** | `10` | > 0 | How many seconds of the first clip the **Preview Curve** button analyzes. |
 
 ---
 
@@ -115,8 +126,10 @@ The final output, `M2SVid_Convergence_Control.mp4`, can then be imported into Da
 ├── depth_scaler.py                # EMAMinMaxScaler for depth normalization
 ├── u2net.py                       # U²-Net P architecture definition
 ├── iw3_sod_v1_20260125.pth        # Pre-trained model weights (~4.6 MB)
-├── requirements.txt               # Python dependencies (CUDA 12.8)
+├── requirements.txt               # Python dependencies (CUDA 13.0)
 ├── RUN_Convergence_Automator.bat  # Windows launcher script
+├── Davinci_Fusion_Nodes/          # DaVinci Resolve Fusion macro + docs
+├── settings.json                  # Saved GUI settings (generated, not tracked)
 └── venv/                          # Virtual environment (not tracked)
 ```
 

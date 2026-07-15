@@ -88,14 +88,20 @@ class EMAMinMaxScaler():
         assert self.minmax_buffer is not None and self.minmax_buffer.is_filled()
         return self.minmax_buffer.get_minmax()
 
-    def __call__(self, frame, return_minmax=False):
-        return self.update(frame, return_minmax=return_minmax)
+    def __call__(self, frame, return_minmax=False, minmax=None):
+        return self.update(frame, return_minmax=return_minmax, minmax=minmax)
 
-    def update(self, frame, return_minmax=False):
+    def update(self, frame, return_minmax=False, minmax=None):
+        # `minmax` optionally supplies (min, max) statistics measured elsewhere
+        # (e.g. on the full-resolution frame) while `frame` itself may be a
+        # downscaled copy queued to save memory.
         if self.minmax_buffer is None:
             self.minmax_buffer = MinMaxBuffer(self.buffer_size, dtype=frame.dtype, device=frame.device)
         self.frame_queue.append(frame)
-        self.minmax_buffer.add(frame.amin(), frame.amax())
+        if minmax is None:
+            self.minmax_buffer.add(frame.amin(), frame.amax())
+        else:
+            self.minmax_buffer.add(minmax[0], minmax[1])
         if not self.minmax_buffer.is_filled():
             # queued
             if return_minmax:
